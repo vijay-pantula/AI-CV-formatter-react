@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI-Powered CV Formatter</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & Babel -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- File Processing & Generation Libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.4.18/mammoth.browser.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.23/jspdf.plugin.autotable.min.js"></script>
+
+    <script>
+      tailwind.config = {
+        darkMode: 'class',
+      }
+    </script>
+</head>
+<body class="bg-gray-100 dark:bg-gray-900">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // --- Library Setup ---
+        pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js`;
+        const { jsPDF } = window.jspdf;
+        const { useState, useCallback, useMemo } = React;
+
+        // --- Reusable UI Components ---
+        const EditableField = ({ label, value, onChange }) => (
+            <div className="mb-3">
+                <label className="block text-sm font-medium text-gray-600 dark:text-gray-400">{label}</label>
+                <input
+                    type="text"
+                    value={value || ''}
+                    onChange={onChange}
+                    className="mt-1 block w-full bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                />
+            </div>
+        );
+
+        const EditableTextArea = ({ label, value, onChange }) => (
+            <div className="mb-3">
+                <label className="block text-sm font-medium text-gray-600 dark:text-gray-400">{label}</label>
+                <textarea
+                    value={value || ''}
+                    onChange={onChange}
+                    rows="4"
+                    className="mt-1 block w-full bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                />
+            </div>
+        );
+
+        // --- Main App Component ---
+        const App = () => {
+          const [originalCvText, setOriginalCvText] = useState('');
+          const [formattedCv, setFormattedCv] = useState(null);
+          const [isProcessing, setIsProcessing] = useState(false);
+          const [error, setError] = useState('');
+          const [darkMode, setDarkMode] = useState(false);
+          const [fileName, setFileName] = useState('');
+          const [isDragActive, setIsDragActive] = useState(false);
+          const [candidateBhNo, setCandidateBhNo] = useState('');
+
+          const handleFileChange = async (file) => {
+            if (!file) return;
+            setFileName(file.name);
+            setIsProcessing(true);
+            setError('');
+            setOriginalCvText('');
+            setFormattedCv(null);
+            try {
+              let text = '';
+              const fileType = file.type;
+              const fileNameLower = file.name.toLowerCase();
+
+              if (fileType === 'application/pdf') {
+                text = await extractTextFromPdf(file);
+              } else if (fileType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+                text = await extractTextFromDocx(file);
+              } else if (fileNameLower.endsWith('.xlsx') || fileNameLower.endsWith('.xls')) {
+                text = await extractTextFromXlsx(file);
+              } else {
+                throw new Error('Unsupported file type. Please upload a PDF, DOCX, or XLSX file.');
+              }
+              setOriginalCvText(text);
+              await processCvWithAI(text);
+            } catch (err) {
+              setError(err.message || 'An error occurred while processing the file.');
+              console.error(err);
+            } finally {
+              setIsProcessing(false);
+            }
+          };
+          
+          const onDrop = useCallback((event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              setIsDragActive(false);
+              if (event.dataTransfer.files && event.dataTransfer.files[0]) {
+                  handleFileChange(event.dataTransfer.files[0]);
+              }
+          }, []);
+
+          const onDragOver = useCallback((event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              setIsDragActive(true);
+          }, []);
+          
+          const onDragLeave = useCallback((event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              setIsDragActive(false);
+          }, []);
+
+          const onFileInputChange = (event) => {
+              if (event.target.files && event.target.files[0]) {
+                  handleFileChange(event.target.files[0]);
+              }
+          };
+
+          const extractTextFromPdf = (file) => {
+            return new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = async (event) => {
+                try {
+                  const pdf = await pdfjsLib.getDocument({ data: event.target.result }).promise;
+                  let textContent = '';
+                  for (let i = 1; i <= pdf.numPages; i++) {
+                    const page = await pdf.getPage(i);
+                    const text = await page.getTextContent();
+                    textContent += text.items.map(s => s.str).join(' ') + '\n';
+                  }
+                  resolve(textContent);
+                } catch (error) {
+                  reject(error);
+                }
+              };
+              reader.onerror = (err) => reject(err);
+              reader.readAsArrayBuffer(file);
+            });
+          };
+
+          const extractTextFromDocx = async (file) => {
+            const arrayBuffer = await file.arrayBuffer();
+            const result = await window.mammoth.extractRawText({ arrayBuffer });
+            return result.value;
+          };
+          
+          const extractTextFromXlsx = (file) => {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    try {
+                        const data = new Uint8Array(event.target.result);
+                        const workbook = XLSX.read(data, { type: 'array' });
+                        let textContent = '';
+                        workbook.SheetNames.forEach(sheetName => {
+                            const worksheet = workbook.Sheets[sheetName];
+                            const json = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+                            json.forEach(row => {
+                                textContent += row.join(' ') + '\n';
+                            });
+                        });
+                        resolve(textContent);
+                    } catch (error) {
+                        reject(error);
+                    }
+                };
+                reader.onerror = (err) => reject(err);
+                reader.readAsArrayBuffer(file);
+            });
+          };
+
+          const processCvWithAI = async (text) => {
+              const backendUrl = 'http://localhost:5001/api/cv/format';
+              try {
+                  const response = await fetch(backendUrl, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ cvText: text })
+                  });
+                  if (!response.ok) {
+                      throw new Error(`Backend request failed with status ${response.status}`);
+                  }
+                  const formattedData = await response.json();
+                  setFormattedCv(formattedData);
+              } catch (error) {
+                  console.error("Backend Processing Error:", error);
+                  setError("Failed to process the CV with the backend. Is the server running?");
+              }
+          };
+          
+          const handleFieldChange = (section, index, field, value) => {
+            setFormattedCv(prev => {
+              const newCv = JSON.parse(JSON.stringify(prev));
+              if (index !== null && Array.isArray(newCv[section])) {
+                newCv[section][index][field] = value;
+              } else if (field) {
+                 newCv[section][field] = value;
+              } else {
+                newCv[section] = value;
+              }
+              return newCv;
+            });
+          };
+          
+          const addExperience = () => {
+            setFormattedCv(prev => ({
+              ...prev,
+              experience: [...(prev.experience || []), { title: "", company: "", dates: "", duties: "" }]
+            }));
+          };
+
+          const removeExperience = (index) => {
+            setFormattedCv(prev => ({
+              ...prev,
+              experience: prev.experience.filter((_, i) => i !== index)
+            }));
+          };
+
+          const exportToPdf = () => {
+            if (!formattedCv) return;
+            const doc = new jsPDF();
+            const name = formattedCv.header?.name || 'Candidate';
+            const bhNo = candidateBhNo ? ` (${candidateBhNo})` : '';
+            const pdfFileName = `${name}${bhNo} Client CV.pdf`;
+
+            doc.setFont('Times', 'normal');
+            let y = 20;
+            const pageHeight = doc.internal.pageSize.height;
+            const bottomMargin = 20;
+
+            const checkPageBreak = (requiredHeight) => {
+                if (y + requiredHeight > pageHeight - bottomMargin) {
+                    doc.addPage();
+                    y = 20;
+                }
+            };
+
+            if (formattedCv.header) {
+                checkPageBreak(20);
+                doc.setFontSize(22);
+                doc.text(formattedCv.header.name || '', 20, y);
+                y += 8;
+                doc.setFontSize(14);
+                doc.setTextColor(100);
+                doc.text(formattedCv.header.jobTitle || '', 20, y);
+                y += 12;
+            }
+
+            if (formattedCv.profile) {
+                doc.setFontSize(16);
+                doc.setTextColor(0);
+                doc.text("Profile", 20, y);
+                y += 8;
+                doc.setFontSize(11);
+                doc.setTextColor(80);
+                const profileLines = doc.splitTextToSize(formattedCv.profile, 170);
+                checkPageBreak(profileLines.length * 5 + 8);
+                doc.text(profileLines, 20, y);
+                y += profileLines.length * 5 + 8;
+            }
+            
+            if (formattedCv.experience && formattedCv.experience.length > 0) {
+                checkPageBreak(16);
+                doc.setFontSize(16);
+                doc.setTextColor(0);
+                doc.text("Experience", 20, y);
+                y += 8;
+                
+                formattedCv.experience.forEach(exp => {
+                    checkPageBreak(10);
+                    doc.setFontSize(12);
+                    doc.setTextColor(0);
+                    doc.text(`${exp.dates || ''} - ${exp.title || ''}, ${exp.company || ''}`, 20, y);
+                    y += 6;
+                    
+                    doc.setFontSize(11);
+                    doc.setTextColor(80);
+                    if (exp.duties) {
+                        const dutiesArray = exp.duties.split('\n');
+                        dutiesArray.forEach(duty => {
+                            let cleanDuty = duty.trim().replace(/^[•-]\s*/, '');
+                            if (!cleanDuty) return;
+                            const dutyLines = doc.splitTextToSize(`• ${cleanDuty}`, 160);
+                            checkPageBreak(dutyLines.length * 5);
+                            doc.text(dutyLines, 25, y);
+                            y += dutyLines.length * 5;
+                        });
+                    }
+                    y += 4;
+                });
+            }
+            
+            if (formattedCv.education && formattedCv.education.length > 0) {
+                checkPageBreak(16);
+                doc.setFontSize(16);
+                doc.setTextColor(0);
+                doc.text("Education", 20, y);
+                y += 8;
+                
+                formattedCv.education.forEach(edu => {
+                    checkPageBreak(6);
+                    doc.setFontSize(11);
+                    doc.setTextColor(80);
+                    doc.text(`• ${edu.degree || ''}, ${edu.institution || ''} (${edu.dates || ''})`, 25, y);
+                    y += 6;
+                });
+                y += 4;
+            }
+
+            if (formattedCv.keySkills) {
+                checkPageBreak(16);
+                doc.setFontSize(16);
+                doc.setTextColor(0);
+                doc.text("Key Skills", 20, y);
+                y += 8;
+                doc.setFontSize(11);
+                doc.setTextColor(80);
+                const skillsLines = doc.splitTextToSize(formattedCv.keySkills, 170);
+                checkPageBreak(skillsLines.length * 5 + 8);
+                doc.text(skillsLines, 20, y);
+                y += skillsLines.length * 5 + 8;
+            }
+            
+            if (formattedCv.interests) {
+                checkPageBreak(16);
+                doc.setFontSize(16);
+                doc.setTextColor(0);
+                doc.text("Interests", 20, y);
+                y += 8;
+                doc.setFontSize(11);
+                doc.setTextColor(80);
+                const interestsLines = doc.splitTextToSize(formattedCv.interests, 170);
+                checkPageBreak(interestsLines.length * 5);
+                doc.text(interestsLines, 20, y);
+            }
+
+            doc.save(pdfFileName);
+          };
+          
+          const dropzoneClasses = `p-10 border-2 border-dashed rounded-lg text-center cursor-pointer transition-colors ${isDragActive ? 'border-blue-500 bg-blue-100 dark:bg-blue-900' : 'border-gray-300 dark:border-gray-600'} ${darkMode ? 'text-gray-300' : 'text-gray-600'}`;
+
+          return (
+            <div className={darkMode ? 'dark' : ''}>
+              <div className="min-h-screen bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-300">
+                <header className="bg-white dark:bg-gray-800 shadow-md p-4 flex justify-between items-center sticky top-0 z-10">
+                  <h1 className="text-2xl font-bold text-blue-600 dark:text-blue-400">AI CV Formatter</h1>
+                  <button onClick={() => setDarkMode(!darkMode)} className="p-2 rounded-full bg-gray-200 dark:bg-gray-700 text-2xl">
+                    {darkMode ? '☀️' : '🌙'}
+                  </button>
+                </header>
+
+                <main className="p-4 md:p-8">
+                  {!formattedCv && (
+                    <div className="max-w-4xl mx-auto">
+                      <div className={dropzoneClasses} onDrop={onDrop} onDragOver={onDragOver} onDragLeave={onDragLeave}>
+                        <input type="file" id="file-upload" className="hidden" onChange={onFileInputChange} accept=".pdf,.docx,.xlsx,.xls"/>
+                        <label htmlFor="file-upload" className="cursor-pointer">
+                          {isDragActive ?
+                            <p>Drop the files here ...</p> :
+                            <p>Drag 'n' drop a CV here, or <span className="text-blue-500 font-semibold">click to select</span> (PDF, DOCX, XLSX)</p>
+                          }
+                        </label>
+                      </div>
+                      {isProcessing && <div className="text-center mt-4 text-lg">Processing CV with AI... This may take a moment.</div>}
+                      {error && <div className="text-center mt-4 text-red-500 bg-red-100 dark:bg-red-900 p-3 rounded-md">{error}</div>}
+                    </div>
+                  )}
+
+                  {formattedCv && (
+                    <div>
+                      <div className="flex flex-wrap justify-between items-center mb-6 gap-4">
+                        <h2 className="text-2xl font-semibold">Formatting: <span className="font-normal">{fileName}</span></h2>
+                        <div className="flex items-center gap-2">
+                          <input 
+                            type="text" 
+                            placeholder="Candidate BH No." 
+                            value={candidateBhNo} 
+                            onChange={(e) => setCandidateBhNo(e.target.value)}
+                            className="bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                          />
+                          <button onClick={() => { setFormattedCv(null); setOriginalCvText(''); }} className="bg-gray-500 text-white px-4 py-2 rounded-md hover:bg-gray-600 transition">Upload New</button>
+                          <button onClick={exportToPdf} className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition">Export as PDF</button>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
+                          <h3 className="text-xl font-bold mb-4 border-b pb-2 dark:border-gray-600">Original Text</h3>
+                          <pre className="whitespace-pre-wrap text-sm font-sans h-96 overflow-y-auto">{originalCvText}</pre>
+                        </div>
+
+                        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
+                            <h3 className="text-xl font-bold mb-4 border-b pb-2 dark:border-gray-600">Formatted CV Editor</h3>
+                            <div className="h-96 overflow-y-auto pr-2">
+                                {formattedCv.header && <div className="border-b dark:border-gray-700 pb-4 mb-4">
+                                    <h4 className="font-bold text-lg mb-2">Header</h4>
+                                    <EditableField label="Name" value={formattedCv.header.name} onChange={e => handleFieldChange('header', null, 'name', e.target.value)} />
+                                    <EditableField label="Job Title" value={formattedCv.header.jobTitle} onChange={e => handleFieldChange('header', null, 'jobTitle', e.target.value)} />
+                                    <EditableField label="Photo URL (Optional)" value={formattedCv.header.photoUrl || ''} onChange={e => handleFieldChange('header', null, 'photoUrl', e.target.value)} />
+                                </div>}
+                                {formattedCv.personalDetails && <div className="border-b dark:border-gray-700 pb-4 mb-4">
+                                    <h4 className="font-bold text-lg mb-2">Personal Details</h4>
+                                    <EditableField label="Nationality" value={formattedCv.personalDetails.nationality} onChange={e => handleFieldChange('personalDetails', null, 'nationality', e.target.value)} />
+                                    <EditableField label="Languages" value={formattedCv.personalDetails.languages} onChange={e => handleFieldChange('personalDetails', null, 'languages', e.target.value)} />
+                                    <EditableField label="Date of Birth" value={formattedCv.personalDetails.dob} onChange={e => handleFieldChange('personalDetails', null, 'dob', e.target.value)} />
+                                    <EditableField label="Marital Status" value={formattedCv.personalDetails.maritalStatus} onChange={e => handleFieldChange('personalDetails', null, 'maritalStatus', e.target.value)} />
+                                </div>}
+                                {formattedCv.profile && <div className="border-b dark:border-gray-700 pb-4 mb-4">
+                                    <h4 className="font-bold text-lg mb-2">Profile</h4>
+                                    <EditableTextArea label="Professional Summary" value={formattedCv.profile} onChange={e => handleFieldChange('profile', null, null, e.target.value)} />
+                                </div>}
+                                {formattedCv.experience && <div>
+                                    <h4 className="font-bold text-lg mb-2">Experience</h4>
+                                    {formattedCv.experience.map((exp, index) => (
+                                        <div key={index} className="border dark:border-gray-700 p-4 rounded-md mb-4 relative">
+                                            <button onClick={() => removeExperience(index)} className="absolute top-2 right-2 text-red-500 hover:text-red-700 font-bold text-xl">&times;</button>
+                                            <EditableField label="Job Title" value={exp.title} onChange={e => handleFieldChange('experience', index, 'title', e.target.value)} />
+                                            <EditableField label="Company" value={exp.company} onChange={e => handleFieldChange('experience', index, 'company', e.target.value)} />
+                                            <EditableField label="Dates" value={exp.dates} onChange={e => handleFieldChange('experience', index, 'dates', e.target.value)} />
+                                            <EditableTextArea label="Duties" value={exp.duties} onChange={e => handleFieldChange('experience', index, 'duties', e.target.value)} />
+                                        </div>
+                                    ))}
+                                    <button onClick={addExperience} className="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 transition w-full">Add Experience</button>
+                                </div>}
+                            </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </main>
+              </div>
+            </div>
+          );
+        };
+
+        const container = document.getElementById('root');
+        const root = ReactDOM.createRoot(container);
+        root.render(<App />);
+    </script>
+</body>
+</html>
